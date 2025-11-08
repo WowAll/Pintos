@@ -268,9 +268,10 @@ thread_sleep (int64_t ticks) {
 	thread_block ();
 	intr_set_level (old_level);
 }
+
 void
 thread_wake (int64_t ticks) {
-	ASSERT (intr_get_level () == INTR_OFF);
+	ASSERT (intr_context ());
 	while (!list_empty (&sleep_list)) {
 		struct list_elem *e = list_front (&sleep_list);
 		struct thread *t = list_entry (e, struct thread, elem);
