@@ -28,6 +28,10 @@
    that are ready to run but not actually running. */
 static struct list ready_list;
 
+/* List of processes in THREAD_BLOCKED state, that is, processes
+   that are sleeping and waiting to be woken up. */
+static struct list sleep_list;
+
 /* Idle thread. */
 static struct thread *idle_thread;
 
@@ -108,6 +112,7 @@ thread_init (void) {
 	/* Init the globla thread context */
 	lock_init (&tid_lock);
 	list_init (&ready_list);
+	list_init (&sleep_list);
 	list_init (&destruction_req);
 
 	/* Set up a thread structure for the running thread. */
@@ -245,15 +250,45 @@ thread_unblock (struct thread *t) {
 	intr_set_level (old_level);
 }
 
+static bool
+thread_sleep_compare (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
+	const struct thread *ta = list_entry (a, struct thread, elem);
+	const struct thread *tb = list_entry (b, struct thread, elem);
+	return ta->sleep_until < tb->sleep_until;
+}
+
+void
+thread_sleep (int64_t ticks) {
+	struct thread *cur = thread_current ();
+
+	enum intr_level old_level = intr_disable ();
+
+	cur->sleep_until = ticks;
+	list_insert_ordered (&sleep_list, &cur->elem, thread_sleep_compare, NULL);
+	thread_block ();
+	intr_set_level (old_level);
+}
+void
+thread_wake (int64_t ticks) {
+	ASSERT (intr_get_level () == INTR_OFF);
+	while (!list_empty (&sleep_list)) {
+		struct list_elem *e = list_front (&sleep_list);
+		struct thread *t = list_entry (e, struct thread, elem);
+		if (t->sleep_until <= ticks) {
+			list_remove(e);
+			thread_unblock (t);
+		}
+		else
+			break;
+	}
+}
+
 /* Returns the name of the running thread. */
 const char *
 thread_name (void) {
 	return thread_current ()->name;
 }
 
-/* Returns the running thread.
-   This is running_thread() plus a couple of sanity checks.
-   See the big comment at the top of thread.h for details. */
 struct thread *
 thread_current (void) {
 	struct thread *t = running_thread ();
@@ -268,6 +303,8 @@ thread_current (void) {
 
 	return t;
 }
+
+
 
 /* Returns the running thread's tid. */
 tid_t
