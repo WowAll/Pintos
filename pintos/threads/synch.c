@@ -318,16 +318,8 @@ cond_signal (struct condition *cond, struct lock *lock UNUSED) {
 
 	if (!list_empty (&cond->waiters)) {
 		struct list_elem *e = list_min (&cond->waiters, sema_priority_compare, NULL);
-		if (e == list_end (&cond->waiters))
-			list_pop_back(&cond->waiters);
-		else if (e == list_begin (&cond->waiters))
-			list_pop_front(&cond->waiters);
-		else
-			list_remove(e);
+		list_remove(e);
 		sema_up (&list_entry (e, struct semaphore_elem, elem)->semaphore);
-		// list_sort (&cond->waiters, sema_priority_compare, NULL);
-		// sema_up (&list_entry (list_pop_front(&cond->waiters),
-		// 			struct semaphore_elem, elem)->semaphore);
 	}
 }
 
