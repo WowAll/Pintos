@@ -83,14 +83,14 @@ static tid_t allocate_tid (void);
 // setup temporal gdt first.
 static uint64_t gdt[3] = { 0, 0x00af9a000000ffff, 0x00cf92000000ffff };
 
-static bool
+bool
 thread_sleep_compare (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
 	const struct thread *ta = list_entry (a, struct thread, elem);
 	const struct thread *tb = list_entry (b, struct thread, elem);
 	return ta->sleep_until < tb->sleep_until;
 }
 
-static bool
+bool
 thread_priority_compare (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
 	const struct thread *ta = list_entry (a, struct thread, elem);
 	const struct thread *tb = list_entry (b, struct thread, elem);
@@ -291,6 +291,7 @@ thread_wake (int64_t ticks) {
 		else
 			break;
 	}
+	thread_preempt ();
 }
 
 /* Returns the name of the running thread. */
