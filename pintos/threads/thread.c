@@ -28,6 +28,10 @@
    that are ready to run but not actually running. */
 static struct list ready_list;
 
+/* List of processes in THREAD_BLOCKED state, that is, processes
+   that are sleeping and waiting to be woken up. */
+static struct list sleep_list;
+
 /* Idle thread. */
 static struct thread *idle_thread;
 
@@ -79,6 +83,20 @@ static tid_t allocate_tid (void);
 // setup temporal gdt first.
 static uint64_t gdt[3] = { 0, 0x00af9a000000ffff, 0x00cf92000000ffff };
 
+bool
+thread_sleep_compare (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
+	const struct thread *ta = list_entry (a, struct thread, elem);
+	const struct thread *tb = list_entry (b, struct thread, elem);
+	return ta->sleep_until < tb->sleep_until;
+}
+
+bool
+thread_priority_compare (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
+	const struct thread *ta = list_entry (a, struct thread, elem);
+	const struct thread *tb = list_entry (b, struct thread, elem);
+	return ta->priority > tb->priority;
+}
+
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -108,6 +126,7 @@ thread_init (void) {
 	/* Init the globla thread context */
 	lock_init (&tid_lock);
 	list_init (&ready_list);
+	list_init (&sleep_list);
 	list_init (&destruction_req);
 
 	/* Set up a thread structure for the running thread. */
@@ -207,6 +226,8 @@ thread_create (const char *name, int priority,
 	/* Add to run queue. */
 	thread_unblock (t);
 
+	thread_preempt ();
+
 	return tid;
 }
 
@@ -240,9 +261,37 @@ thread_unblock (struct thread *t) {
 
 	old_level = intr_disable ();
 	ASSERT (t->status == THREAD_BLOCKED);
-	list_push_back (&ready_list, &t->elem);
+	list_insert_ordered (&ready_list, &t->elem, thread_priority_compare, NULL);
 	t->status = THREAD_READY;
 	intr_set_level (old_level);
+}
+
+void
+thread_sleep (int64_t ticks) {
+	struct thread *cur = thread_current ();
+
+	enum intr_level old_level = intr_disable ();
+
+	cur->sleep_until = ticks;
+	list_insert_ordered (&sleep_list, &cur->elem, thread_sleep_compare, NULL);
+	thread_block ();
+	intr_set_level (old_level);
+}
+
+void
+thread_wake (int64_t ticks) {
+	ASSERT (intr_context ());
+	while (!list_empty (&sleep_list)) {
+		struct list_elem *e = list_front (&sleep_list);
+		struct thread *t = list_entry (e, struct thread, elem);
+		if (t->sleep_until <= ticks) {
+			list_remove(e);
+			thread_unblock (t);
+		}
+		else
+			break;
+	}
+	thread_preempt ();
 }
 
 /* Returns the name of the running thread. */
@@ -251,9 +300,6 @@ thread_name (void) {
 	return thread_current ()->name;
 }
 
-/* Returns the running thread.
-   This is running_thread() plus a couple of sanity checks.
-   See the big comment at the top of thread.h for details. */
 struct thread *
 thread_current (void) {
 	struct thread *t = running_thread ();
@@ -268,6 +314,8 @@ thread_current (void) {
 
 	return t;
 }
+
+
 
 /* Returns the running thread's tid. */
 tid_t
@@ -303,15 +351,35 @@ thread_yield (void) {
 
 	old_level = intr_disable ();
 	if (curr != idle_thread)
-		list_push_back (&ready_list, &curr->elem);
+		list_insert_ordered (&ready_list, &curr->elem, thread_priority_compare, NULL);
 	do_schedule (THREAD_READY);
+	intr_set_level (old_level);
+}
+
+void thread_preempt (void) {
+	enum intr_level old_level = intr_disable ();
+
+	if (list_empty (&ready_list))
+		return;
+
+	struct thread *curr = thread_current ();
+	struct thread *next = list_entry (list_front (&ready_list), struct thread, elem);
+	if (next->priority > curr->priority) {
+		if (intr_context ())
+			intr_yield_on_return ();
+		else
+			thread_yield ();
+	}
 	intr_set_level (old_level);
 }
 
 /* Sets the current thread's priority to NEW_PRIORITY. */
 void
 thread_set_priority (int new_priority) {
+	enum intr_level old_level = intr_disable ();
 	thread_current ()->priority = new_priority;
+	thread_preempt ();
+	intr_set_level (old_level);
 }
 
 /* Returns the current thread's priority. */
