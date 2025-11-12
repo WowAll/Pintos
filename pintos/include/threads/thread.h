@@ -142,6 +142,7 @@ const char *thread_name (void);
 
 void thread_exit (void) NO_RETURN;
 void thread_yield (void);
+void thread_preempt (void);
 
 int thread_get_priority (void);
 void thread_set_priority (int);
@@ -151,7 +152,8 @@ void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
 
-bool thread_priority_compare (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
+bool thread_sleep_compare (const struct list_elem *a, const struct list_elem *b, void *aux);
+bool thread_priority_compare (const struct list_elem *a, const struct list_elem *b, void *aux);
 void thread_update_priority (struct thread *t);
 void thread_remove_donations (struct thread *t, struct lock *lock);
 void thread_donate_priority (struct thread *t);
