@@ -90,11 +90,17 @@ struct thread {
 	tid_t tid;                          /* Thread identifier. */
 	enum thread_status status;          /* Thread state. */
 	char name[16];                      /* Name (for debugging purposes). */
-	int priority;                       /* Priority. */
-	int64_t sleep_until;                 /* Time to sleep until. */
+	int64_t sleep_until; // wakeup_tick
+
+	int priority; // 이 놈은 계속 바뀔 수 있음
+	int default_priority; // 원래 가졌던 우선순위
+	struct lock *waiting_lock; // 내가 대기 중인 락
+	struct list donation_list; // 도네를 받은 목록
+	struct list_elem donation_elem; // 도네리스트 안의 요소
 
 	/* Shared between thread.c and synch.c. */
 	struct list_elem elem;              /* List element. */
+
 
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */
@@ -144,6 +150,11 @@ int thread_get_nice (void);
 void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
+
+bool thread_priority_compare (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
+void thread_update_priority (struct thread *t);
+void thread_remove_donations (struct thread *t, struct lock *lock);
+void thread_donate_priority (struct thread *t);
 
 void do_iret (struct intr_frame *tf);
 

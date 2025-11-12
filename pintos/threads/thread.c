@@ -97,6 +97,58 @@ thread_priority_compare (const struct list_elem *a, const struct list_elem *b, v
 	return ta->priority > tb->priority;
 }
 
+// 쓰레드노 우선순위오 재갱신스루
+void
+thread_update_priority (struct thread *t) {
+	ASSERT (t != NULL);
+
+	int max_priority = t->default_priority;
+	struct list_elem *e;
+
+	for (e = list_begin (&t->donation_list); e != list_end (&t->donation_list); e = list_next (e)) {
+		struct thread *donor = list_entry (e, struct thread, donation_elem);
+
+		if (donor->priority > max_priority)
+			max_priority = donor->priority;
+	}
+
+	t->priority = max_priority;
+}
+
+// 특정 락 관련 우선순위 기부 제거
+void
+thread_remove_donations (struct thread *t, struct lock *lock) {
+	ASSERT (t != NULL);
+
+	struct list_elem *e = list_begin (&t->donation_list);
+
+	while (e != list_end (&t->donation_list)) {
+		struct thread *donor = list_entry (e, struct thread, donation_elem);
+		struct list_elem *next = list_next (e);
+
+		if (donor->waiting_lock == lock)
+			list_remove (e);
+
+		e = next;
+	}
+}
+
+// 우선순위 기부 기부 기부 워!
+void
+thread_donate_priority (struct thread *t) {
+	// 락을 그냥 계속 위로 전달 해부러야지..
+	while (t->waiting_lock != NULL) {
+		struct thread *holder = t->waiting_lock->holder;
+
+		if (holder == NULL)
+			break;
+
+		// 쌔귀 레츠고!
+		thread_update_priority (holder);
+		t = holder;
+	}
+}
+
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -373,13 +425,20 @@ void thread_preempt (void) {
 	intr_set_level (old_level);
 }
 
-/* Sets the current thread's priority to NEW_PRIORITY. */
+// 이마 스레드노 우선순위와 new_priority 데스
 void
 thread_set_priority (int new_priority) {
+	struct thread *curr = thread_current ();
 	enum intr_level old_level = intr_disable ();
-	thread_current ()->priority = new_priority;
-	thread_preempt ();
+	int old_priority = curr->priority;
+
+	curr->default_priority = new_priority;
+	thread_update_priority (curr);
+
 	intr_set_level (old_level);
+  
+	if (curr->priority < old_priority)
+		thread_yield ();
 }
 
 /* Returns the current thread's priority. */
@@ -475,8 +534,13 @@ init_thread (struct thread *t, const char *name, int priority) {
 	t->status = THREAD_BLOCKED;
 	strlcpy (t->name, name, sizeof t->name);
 	t->tf.rsp = (uint64_t) t + PGSIZE - sizeof (void *);
-	t->priority = priority;
 	t->magic = THREAD_MAGIC;
+
+	// 초기화 빼먹지 않기!
+	t->priority = priority;
+	t->default_priority = priority;
+	t->waiting_lock = NULL;
+	list_init(&t->donation_list);
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
