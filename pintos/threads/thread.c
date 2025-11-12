@@ -97,16 +97,24 @@ thread_priority_compare (const struct list_elem *a, const struct list_elem *b, v
 	return ta->priority > tb->priority;
 }
 
+static bool
+thread_donation_priority_less (const struct list_elem *a,
+		const struct list_elem *b, void *aux UNUSED) {
+	const struct thread *ta = list_entry (a, struct thread, donation_elem);
+	const struct thread *tb = list_entry (b, struct thread, donation_elem);
+	return ta->priority < tb->priority;
+}
+
 // 쓰레드노 우선순위오 재갱신스루
 void
 thread_update_priority (struct thread *t) {
 	ASSERT (t != NULL);
 
 	int max_priority = t->default_priority;
-	struct list_elem *e;
 
-	for (e = list_begin (&t->donation_list); e != list_end (&t->donation_list); e = list_next (e)) {
-		struct thread *donor = list_entry (e, struct thread, donation_elem);
+	if (!list_empty (&t->donation_list)) {
+		struct list_elem *max_elem = list_max (&t->donation_list, thread_donation_priority_less, NULL);
+		struct thread *donor = list_entry (max_elem, struct thread, donation_elem);
 
 		if (donor->priority > max_priority)
 			max_priority = donor->priority;
