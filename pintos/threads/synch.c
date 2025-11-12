@@ -263,10 +263,12 @@ sema_priority_compare (const struct list_elem *a, const struct list_elem *b, voi
 	struct semaphore_elem *sa = list_entry (a, struct semaphore_elem, elem);
 	struct semaphore_elem *sb = list_entry (b, struct semaphore_elem, elem);
 
-	struct list *sa_l = &(sa->semaphore.waiters);
-	struct list *sb_l = &(sb->semaphore.waiters);
+	if (list_empty (&sa->semaphore.waiters))
+		return false;
+	if (list_empty (&sb->semaphore.waiters))
+		return true;
 
-	return thread_priority_compare (list_front (sa_l), list_front (sb_l), NULL);
+	return thread_priority_compare (list_front (&sa->semaphore.waiters), list_front (&sb->semaphore.waiters), NULL);
 }
 
 /* 조건 변수 COND를 초기화한다. 조건 변수는 한 쪽 코드가 상태를
