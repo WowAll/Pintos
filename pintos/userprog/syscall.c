@@ -90,7 +90,9 @@ syscall_write(int fd, const void *buffer, unsigned length) {
 
 static bool
 syscall_remove(const char* filename) {
-
+	validate_user_addr(filename);
+	
+	return filesys_remove(filename);
 }
 
 static int
@@ -167,6 +169,8 @@ syscall_handler (struct intr_frame *f) {
 		case SYS_WAIT:
 			f->R.rax = process_wait(f->R.rdi);
 			break;
+		case SYS_REMOVE:
+			f->R.rax = syscall_remove(f->R.rdi);
 		case SYS_READ:
 			//syscall_read(f->R.rdi, (void *)f->R.rsi, f->R.rdx);
 			break;
@@ -179,13 +183,3 @@ syscall_handler (struct intr_frame *f) {
 			break;
 	}
 }
-
-/*
-int syscall_read(int fd, void *buffer, unsigned length) {
-	validate_user_ptr(buffer);
-
-	if (fd == STDIN_FILENO) {
-	}
-	return -1;
-}
-	*/
