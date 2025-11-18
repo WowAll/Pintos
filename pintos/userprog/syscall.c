@@ -125,8 +125,6 @@ syscall_open(const char* filename) {
 static void
 syscall_close (int fd) {
 	struct thread *curr = thread_current ();
-    if (fd < 2 || fd >= FD_MAX)
-        return;
 
     struct file *f = find_file_by_fd(fd);
     if (f == NULL)
