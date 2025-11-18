@@ -8,6 +8,7 @@
 #include "userprog/gdt.h"
 #include "threads/flags.h"
 #include "intrinsic.h"
+#include "filesys/filesys.h"
 
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
@@ -57,7 +58,6 @@ find_file_by_fd(int fd) {
 	if (fd < 0 || fd >= FD_MAX)
 		return NULL;
 	return cur->fd_table[fd];
-
 }
 
 static int
@@ -111,15 +111,32 @@ syscall_open(const char* filename) {
 	if (f == NULL)
 		return -1;
 
-	else {
-		int fd = fd_insert(f);
-		if (fd == -1) {
-			lock_acquire(&filesys_lock);
-			file_close(f);
-			lock_release(&filesys_lock);
-		}
-		return fd;
+	
+	int fd = fd_insert(f);
+	
+	if (fd == -1) {
+		lock_acquire(&filesys_lock);
+		file_close(f);
+		lock_release(&filesys_lock);
 	}
+	return fd;
+}
+
+static void
+syscall_close (int fd) {
+	struct thread *curr = thread_current ();
+    if (fd < 2 || fd >= FD_MAX)
+        return;
+
+    struct file *f = find_file_by_fd(fd);
+    if (f == NULL)
+        return;
+
+    lock_acquire(&filesys_lock);
+    file_close(f);
+    lock_release(&filesys_lock);
+
+	curr->fd_table[fd] = NULL;
 }
 
 static void
@@ -130,6 +147,7 @@ syscall_exit (int status) {
 
     thread_exit();
 }
+
 
 static bool
 syscall_create (const char *file, unsigned initial_size) {
@@ -171,6 +189,9 @@ syscall_handler (struct intr_frame *f) {
 			break;
 		case SYS_REMOVE:
 			f->R.rax = syscall_remove(f->R.rdi);
+		case SYS_CLOSE:
+			syscall_close(f->R.rdi);
+			break;
 		case SYS_READ:
 			//syscall_read(f->R.rdi, (void *)f->R.rsi, f->R.rdx);
 			break;
@@ -179,6 +200,7 @@ syscall_handler (struct intr_frame *f) {
 			break;
 		case SYS_OPEN:
 			f->R.rax = syscall_open(f->R.rdi);
+			break;
 		default:
 			break;
 	}

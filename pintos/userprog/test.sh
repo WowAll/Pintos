@@ -7,7 +7,7 @@ BUILD_DIR="${USERPROG_DIR}/build"
 
 DISK_NAME="filesys.dsk"
 DISK_SIZE=2                     # MB
-TEST_BIN_SRC="tests/userprog/args-single"
+TEST_BIN_SRC="tests/userprog/close-twice"
 TEST_BIN_DST="args-single"
 TEST_ARGS="args-single onearg"
 
