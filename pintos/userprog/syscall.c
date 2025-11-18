@@ -27,49 +27,7 @@ struct lock filesys_lock;
 #define MSR_LSTAR 0xc0000082        /* 롱 모드 SYSCALL 대상 */
 #define MSR_SYSCALL_MASK 0xc0000084 /* eflags용 마스크 */
 
-static int syscall_write(int fd, const void *buffer, unsigned length) {
-	//validate_user_ptr(buffer);
-
-	if (fd == STDOUT_FILENO) {
-		putbuf(buffer, length);
-		return length;
-	}
-
-	return -1;
-}
-
-static void
-syscall_exit (int status) {
-	struct thread *curr = thread_current();
-    curr->exit_status = status;
-	printf ("%s: exit(%d)\n", curr->name, status);
-
-    thread_exit();
-}
-
-static void
-validate_user_string (const void *uaddr) {
-	if (uaddr == NULL)
-	syscall_exit(-1);
-
-	// 최소 버전: 첫 바이트만 검증
-	if (!is_user_vaddr(uaddr) || pml4_get_page(thread_current()->pml4, uaddr) == NULL)
-		syscall_exit(-1);
-}
-
-static bool syscall_create (const char *file, unsigned initial_size) {
-	validate_user_string(file);
-
-	if (file[0] == '\0')
-		syscall_exit(-1);
-
-	bool success;
-	lock_acquire(&filesys_lock);
-	success = filesys_create(file, initial_size);
-	lock_release(&filesys_lock);
-
-	return success;
-}
+/* 초기화 함수 */
 
 void
 syscall_init (void) {
@@ -83,6 +41,107 @@ syscall_init (void) {
 	 * 따라서 FLAG_FL을 마스크했습니다. */
 	write_msr(MSR_SYSCALL_MASK,
 			FLAG_IF | FLAG_TF | FLAG_DF | FLAG_IOPL | FLAG_AC | FLAG_NT);
+}
+
+/* 헬퍼 함수들 */
+
+static void
+validate_user_addr (const void *uaddr) {
+	if (uaddr == NULL || is_kernel_vaddr(uaddr) || pml4_get_page(thread_current()->pml4, uaddr) == NULL)
+		syscall_exit(-1);
+}
+
+static struct file *
+find_file_by_fd(int fd) {
+	struct thread *cur = thread_current ();
+	if (fd < 0 || fd >= FD_MAX)
+		return NULL;
+	return cur->fd_table[fd];
+
+}
+
+static int
+fd_insert (struct file *f) {
+	struct thread *t = thread_current();
+
+    // 0,1: stdin, stdout (보통 고정)
+    for (int fd = 2; fd < FD_MAX; fd++) {
+        if (t->fd_table[fd] == NULL) {
+            t->fd_table[fd] = f;
+            return fd;
+        }
+    }
+    return -1;   // 테이블 꽉 찜
+}
+
+/* 시스템 콜 구현 */
+
+static int
+syscall_write(int fd, const void *buffer, unsigned length) {
+	//validate_user_ptr(buffer);
+
+	if (fd == STDOUT_FILENO) {
+		putbuf(buffer, length);
+		return length;
+	}
+
+	return -1;
+}
+
+static bool
+syscall_remove(const char* filename) {
+
+}
+
+static int
+syscall_open(const char* filename) {
+	struct thread *curr = thread_current();
+
+	validate_user_addr(filename);
+
+	if (filename[0] == '\0')
+		return -1;
+
+	lock_acquire(&filesys_lock);
+	struct file *f = filesys_open(filename);
+	lock_release(&filesys_lock);
+
+	if (f == NULL)
+		return -1;
+
+	else {
+		int fd = fd_insert(f);
+		if (fd == -1) {
+			lock_acquire(&filesys_lock);
+			file_close(f);
+			lock_release(&filesys_lock);
+		}
+		return fd;
+	}
+}
+
+static void
+syscall_exit (int status) {
+	struct thread *curr = thread_current();
+    curr->exit_status = status;
+	printf ("%s: exit(%d)\n", curr->name, status);
+
+    thread_exit();
+}
+
+static bool
+syscall_create (const char *file, unsigned initial_size) {
+	validate_user_addr(file);
+
+	if (file[0] == '\0')
+		syscall_exit(-1);
+
+	bool success;
+	lock_acquire(&filesys_lock);
+	success = filesys_create(file, initial_size);
+	lock_release(&filesys_lock);
+
+	return success;
 }
 
 /* 주요 시스템 호출 인터페이스 */
@@ -114,27 +173,12 @@ syscall_handler (struct intr_frame *f) {
 		case SYS_WRITE:
 			f->R.rax = syscall_write(f->R.rdi, (void *)f->R.rsi, f->R.rdx);
 			break;
+		case SYS_OPEN:
+			f->R.rax = syscall_open(f->R.rdi);
 		default:
 			break;
 	}
 }
-
-/*
-void
-validate_user_ptr(const void *user_addr) {
-	struct thread *curr = thread_current();
-
-	if (user_addr == NULL)
-		exit(-1);
-
-	if (!is_user_vaddr(user_addr))
-		exit(-1);
-
-	if (pml4_get_page(curr->pml4, user_addr) == NULL)
-		exit(-1);
-
-}
-		*/
 
 /*
 int syscall_read(int fd, void *buffer, unsigned length) {

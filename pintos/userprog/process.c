@@ -215,7 +215,6 @@ process_exit (void) {
 	 * TODO: project2/process_termination.html).
 	 * TODO: 여기에 프로세스 리소스 정리 기능을 구현하는 것을 권장합니다. */
 
-
 	process_cleanup ();
 }
 
