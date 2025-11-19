@@ -28,6 +28,8 @@ typedef int tid_t;
 #define PRI_DEFAULT 31                  /* 기본 우선순위. */
 #define PRI_MAX 63                      /* 최고 우선순위. */
 
+#define FD_MAX 128
+
 /* 커널 스레드 또는 사용자 프로세스.
  *
  * 각 스레드 구조체는 자체 4KB 페이지에 저장됩니다.
@@ -91,7 +93,9 @@ struct thread {
 
 	int priority; // 이것은 계속 바뀔 수 있음
 	int default_priority; // 원래 가졌던 우선순위
+
 	struct lock *waiting_lock; // 내가 대기 중인 락
+
 	struct list donation_list; // 기부를 받은 목록
 	struct list_elem donation_elem; // 기부 목록 안의 요소
 
@@ -114,6 +118,8 @@ struct thread {
 	/* thread.c에서 소유. */
 	struct intr_frame tf;               /* 전환을 위한 정보 */
 	unsigned magic;                     /* 스택 오버플로우를 감지합니다. */
+
+	struct file *fd_table[FD_MAX];	   // 쓰레드가 보유한 fd테이블
 };
 
 /* false(기본값)이면 라운드 로빈 스케줄러를 사용합니다.

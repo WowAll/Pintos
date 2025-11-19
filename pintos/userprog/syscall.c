@@ -5,6 +5,7 @@
 #include "threads/thread.h"
 #include "threads/loader.h"
 #include "threads/synch.h"
+#include "threads/palloc.h"
 #include "userprog/gdt.h"
 #include "threads/flags.h"
 #include "intrinsic.h"
@@ -46,10 +47,72 @@ syscall_init (void) {
 
 /* 헬퍼 함수들 */
 
+/* Reads a byte at user virtual address UADDR.
+ * UADDR must be below KERN_BASE.
+ * Returns the byte value if successful, -1 if a segfault
+ * occurred. */
+ static int64_t
+ get_user (const uint8_t *uaddr) {
+	 int64_t result;
+	 __asm __volatile (
+	 "movabsq $done_get, %0\n"
+	 "movzbq %1, %0\n"
+	 "done_get:\n"
+	 : "=&a" (result) : "m" (*uaddr));
+	 return result;
+ }
+ 
+ /* Writes BYTE to user address UDST.
+  * UDST must be below KERN_BASE.
+  * Returns true if successful, false if a segfault occurred. */
+ static bool
+ put_user (uint8_t *udst, uint8_t byte) {
+	 int64_t error_code;
+	 __asm __volatile (
+	 "movabsq $done_put, %0\n"
+	 "movb %b2, %1\n"
+	 "done_put:\n"
+	 : "=&a" (error_code), "=m" (*udst) : "q" (byte));
+	 return error_code != -1;
+ }
+
 static void
-validate_user_addr (const void *uaddr) {
-	if (uaddr == NULL || is_kernel_vaddr(uaddr) || pml4_get_page(thread_current()->pml4, uaddr) == NULL)
+validate_user_buffer(const char *buffer, size_t length) {
+	const uint8_t *u = buffer;
+	if (u == NULL)
 		syscall_exit(-1);
+	if (length == 0)
+		return;
+	if (!is_user_vaddr(u) || !is_user_vaddr(u + length - 1))
+		syscall_exit(-1);
+	for (size_t i = 0; i < length; i++) {
+		if (get_user(u + i) == -1)
+			syscall_exit(-1);
+	}
+}
+
+static void
+copy_user_string (char *kbuf, const char *ustr, size_t max_len)
+{
+	if (ustr == NULL)
+		syscall_exit(-1);
+
+	if (is_kernel_vaddr(ustr))
+		syscall_exit(-1);
+
+	size_t i = 0;
+	while (i + 1 < max_len) {
+		int64_t val = get_user((const uint8_t *)ustr + i);
+		if (val == -1)
+			syscall_exit(-1);
+
+		kbuf[i] = (char)val;
+		if (kbuf[i] == '\0')
+			return;
+		i++;
+	}
+
+	kbuf[max_len - i] = '\0';
 }
 
 static struct file *
@@ -78,40 +141,72 @@ fd_insert (struct file *f) {
 
 static int
 syscall_write(int fd, const void *buffer, unsigned length) {
-	//validate_user_ptr(buffer);
+	validate_user_buffer(buffer, length);
+
+	struct thread *curr = thread_current ();
+
 
 	if (fd == STDOUT_FILENO) {
 		putbuf(buffer, length);
 		return length;
 	}
 
-	return -1;
+	if (fd < 2 || fd >= 128)
+		return -1;
+
+	struct file *f = find_file_by_fd(fd);
+	if (f == NULL)
+		return -1;
+
+	lock_acquire(&filesys_lock);
+	int ret = file_write(f, buffer, length);
+	lock_release(&filesys_lock);
+
+	return ret;
 }
 
 static bool
 syscall_remove(const char* filename) {
-	validate_user_addr(filename);
+	char *kname = palloc_get_page(0);
+	if (kname == NULL)
+		syscall_exit(-1);
+	copy_user_string(kname, filename, PGSIZE);
+
+	if (kname[0] == '\0') {
+		palloc_free_page(kname);
+		return -1;
+	}
+
+	lock_acquire(&filesys_lock);
+    bool ok = filesys_remove(kname);
+    lock_release(&filesys_lock);
+
+	palloc_free_page(kname);
 	
 	return filesys_remove(filename);
 }
 
 static int
 syscall_open(const char* filename) {
-	struct thread *curr = thread_current();
+	char *kname = palloc_get_page(0);
+	if (kname == NULL)
+		syscall_exit(-1);
+	copy_user_string(kname, filename, PGSIZE);
 
-	validate_user_addr(filename);
-
-	if (filename[0] == '\0')
+	if (kname[0] == '\0') {
+		palloc_free_page(kname);
 		return -1;
+	}
 
 	lock_acquire(&filesys_lock);
-	struct file *f = filesys_open(filename);
+	struct file *f = filesys_open(kname);
 	lock_release(&filesys_lock);
+
+	palloc_free_page(kname);
 
 	if (f == NULL)
 		return -1;
 
-	
 	int fd = fd_insert(f);
 	
 	if (fd == -1) {
@@ -119,6 +214,7 @@ syscall_open(const char* filename) {
 		file_close(f);
 		lock_release(&filesys_lock);
 	}
+
 	return fd;
 }
 
@@ -149,17 +245,29 @@ syscall_exit (int status) {
 
 static bool
 syscall_create (const char *file, unsigned initial_size) {
-	validate_user_addr(file);
+    char *kname = palloc_get_page(0);
+    if (kname == NULL)
+        syscall_exit(-1);
 
-	if (file[0] == '\0')
-		syscall_exit(-1);
+    copy_user_string(kname, file, PGSIZE);
 
-	bool success;
-	lock_acquire(&filesys_lock);
-	success = filesys_create(file, initial_size);
-	lock_release(&filesys_lock);
+    if (kname[0] == '\0') {
+        palloc_free_page(kname);
+        return false;
+    }
 
-	return success;
+    lock_acquire(&filesys_lock);
+    bool ok = filesys_create(kname, initial_size);
+    lock_release(&filesys_lock);
+
+    palloc_free_page(kname);
+
+    return ok;
+}
+
+static int
+syscall_filesize (int fd) {
+	return file_length(find_file_by_fd(fd));
 }
 
 /* 주요 시스템 호출 인터페이스 */
@@ -187,6 +295,10 @@ syscall_handler (struct intr_frame *f) {
 			break;
 		case SYS_REMOVE:
 			f->R.rax = syscall_remove(f->R.rdi);
+			break;
+		case SYS_FILESIZE:
+			f->R.rax = syscall_filesize(f->R.rdi);
+			break;
 		case SYS_CLOSE:
 			syscall_close(f->R.rdi);
 			break;
@@ -197,7 +309,7 @@ syscall_handler (struct intr_frame *f) {
 			f->R.rax = syscall_write(f->R.rdi, (void *)f->R.rsi, f->R.rdx);
 			break;
 		case SYS_OPEN:
-			f->R.rax = syscall_open(f->R.rdi);
+			f->R.rax = syscall_open(f->R.rdi); 
 			break;
 		default:
 			break;

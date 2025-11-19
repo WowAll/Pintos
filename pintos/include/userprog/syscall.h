@@ -3,6 +3,8 @@
 
 void syscall_init (void);
 
-void validate_user_ptr(const void *user_addr);
+static void syscall_exit (int);
+
+static void validate_user_addr(const void *);
 
 #endif /* userprog/syscall.h */

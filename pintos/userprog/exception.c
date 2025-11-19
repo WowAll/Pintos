@@ -149,6 +149,13 @@ page_fault (struct intr_frame *f) {
 	/* Count page faults. */
 	page_fault_cnt++;
 
+	if (!user) {
+		uint64_t handler = f->R.rax;
+		f->R.rax = (uint64_t)-1;
+		f->rip = handler;
+		return;
+	}
+
 	/* If the fault is true fault, show info and exit. */
 	printf ("Page fault at %p: %s error %s page in %s context.\n",
 			fault_addr,
