@@ -328,7 +328,36 @@ syscall_filesize (int fd) {
 	struct file *f = find_file_by_fd(fd);
 	if (f == NULL)
 		return -1;
-	return file_length(f);
+
+	lock_acquire(&filesys_lock);
+	int length = file_length(f);
+	lock_release(&filesys_lock);
+
+	return length;
+}
+
+static void
+syscall_seek (int fd, unsigned position) {
+	struct file *f = find_file_by_fd(fd);
+	if (f == NULL)
+		return;
+
+	lock_acquire(&filesys_lock);
+	file_seek(f, position);
+	lock_release(&filesys_lock);
+}
+
+static unsigned
+syscall_tell (int fd) {
+	struct file *f = find_file_by_fd(fd);
+	if (f == NULL)
+		return 0;
+
+	lock_acquire(&filesys_lock);
+	int position = file_tell(f);
+	lock_release(&filesys_lock);
+
+	return position;
 }
 
 /* 주요 시스템 호출 인터페이스 */
@@ -371,6 +400,12 @@ syscall_handler (struct intr_frame *f) {
 			break;
 		case SYS_OPEN:
 			f->R.rax = syscall_open(f->R.rdi); 
+			break;
+		case SYS_SEEK:
+			f->R.rax = syscall_seek((int)f->R.rdi, (unsigned)f->R.rsi);
+			break;
+		case SYS_TELL:
+			f->R.rax = syscall_tell((int)f->R.rdi);
 			break;
 		default:
 			break;
