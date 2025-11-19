@@ -91,28 +91,26 @@ validate_user_buffer(const char *buffer, size_t length) {
 	}
 }
 
-static void
+static bool
 copy_user_string (char *kbuf, const char *ustr, size_t max_len)
 {
-	if (ustr == NULL)
-		syscall_exit(-1);
-
-	if (is_kernel_vaddr(ustr))
-		syscall_exit(-1);
+	if (ustr == NULL || is_kernel_vaddr(ustr))
+		return false;
 
 	size_t i = 0;
 	while (i + 1 < max_len) {
 		int64_t val = get_user((const uint8_t *)ustr + i);
 		if (val == -1)
-			syscall_exit(-1);
+			return false;
 
 		kbuf[i] = (char)val;
 		if (kbuf[i] == '\0')
-			return;
+			return true;
 		i++;
 	}
 
-	kbuf[max_len - i] = '\0';
+	kbuf[max_len - 1] = '\0';
+	return true;
 }
 
 static struct file *
@@ -127,23 +125,19 @@ static int
 fd_insert (struct file *f) {
 	struct thread *t = thread_current();
 
-    // 0,1: stdin, stdout (보통 고정)
     for (int fd = 2; fd < FD_MAX; fd++) {
         if (t->fd_table[fd] == NULL) {
             t->fd_table[fd] = f;
             return fd;
         }
     }
-    return -1;   // 테이블 꽉 찜
+    return -1; 
 }
 
 /* 시스템 콜 구현 */
 
 static int
 syscall_read(int fd, void *buffer, unsigned size) {
-	if (buffer == NULL || !is_user_vaddr(buffer) || get_user(buffer) == -1)
-		syscall_exit(-1);
-
 	if (size == 0)
 		return 0;
 
@@ -223,7 +217,10 @@ syscall_remove(const char* filename) {
 	char *kname = palloc_get_page(0);
 	if (kname == NULL)
 		syscall_exit(-1);
-	copy_user_string(kname, filename, PGSIZE);
+	if (copy_user_string(kname, filename, PGSIZE) == false) {
+		palloc_free_page(kname);
+		syscall_exit(-1);
+	}
 
 	if (kname[0] == '\0') {
 		palloc_free_page(kname);
@@ -236,15 +233,20 @@ syscall_remove(const char* filename) {
 
 	palloc_free_page(kname);
 	
-	return filesys_remove(filename);
+	return ok;
 }
 
 static int
 syscall_open(const char* filename) {
 	char *kname = palloc_get_page(0);
+
 	if (kname == NULL)
 		syscall_exit(-1);
-	copy_user_string(kname, filename, PGSIZE);
+
+	if (copy_user_string(kname, filename, PGSIZE) == false) {
+		palloc_free_page(kname);
+		syscall_exit(-1);
+	}
 
 	if (kname[0] == '\0') {
 		palloc_free_page(kname);
@@ -302,7 +304,10 @@ syscall_create (const char *file, unsigned initial_size) {
     if (kname == NULL)
         syscall_exit(-1);
 
-    copy_user_string(kname, file, PGSIZE);
+    if (copy_user_string(kname, file, PGSIZE) == false) {
+		palloc_free_page(kname);
+		syscall_exit(-1);
+	}
 
     if (kname[0] == '\0') {
         palloc_free_page(kname);
@@ -320,7 +325,10 @@ syscall_create (const char *file, unsigned initial_size) {
 
 static int
 syscall_filesize (int fd) {
-	return file_length(find_file_by_fd(fd));
+	struct file *f = find_file_by_fd(fd);
+	if (f == NULL)
+		return -1;
+	return file_length(f);
 }
 
 /* 주요 시스템 호출 인터페이스 */
