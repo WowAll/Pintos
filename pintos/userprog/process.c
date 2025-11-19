@@ -161,7 +161,7 @@ int
 process_exec (void *f_name) {
 	char *file_name = f_name;
 	bool success;
-
+	
 	/* 스레드 구조체의 intr_frame을 사용할 수 없습니다.
 	 * 이는 현재 스레드가 재스케줄링될 때
 	 * 실행 정보를 멤버에 저장하기 때문입니다. */

@@ -140,11 +140,64 @@ fd_insert (struct file *f) {
 /* 시스템 콜 구현 */
 
 static int
+syscall_read(int fd, void *buffer, unsigned size) {
+	if (buffer == NULL || !is_user_vaddr(buffer) || get_user(buffer) == -1)
+		syscall_exit(-1);
+
+	if (size == 0)
+		return 0;
+
+	if (fd == STDIN_FILENO) {
+		for (unsigned i = 0; i < size; i++) {
+			uint8_t c= input_getc();
+			if (!(put_user((uint8_t *)buffer + i, c)))
+				syscall_exit(-1);
+		}
+		return (int)size;
+	}
+
+	if (fd < 2 || fd >= 128)
+		return -1;
+
+	struct file *f = find_file_by_fd(fd);
+	if (f == NULL)
+		return -1;
+
+	uint8_t *kbuf = palloc_get_page(0);
+	if (kbuf == NULL)
+		syscall_exit(-1);
+
+	unsigned remaining = size;
+	unsigned copied = 0;
+
+	while (remaining > 0) {
+		unsigned chunk = remaining > PGSIZE ? PGSIZE : remaining;
+		lock_acquire(&filesys_lock);
+		int n = file_read(f, kbuf, chunk);
+		lock_release(&filesys_lock);
+
+		if (n <= 0)
+			break;
+
+		for (int i = 0; i < n; i++) {
+			if (!put_user((uint8_t *)buffer + copied + i, kbuf[i])) {
+				palloc_free_page(kbuf);
+				syscall_exit(-1);
+			}
+		}
+		copied += n;
+		remaining -= n;
+
+		if ((unsigned)n < chunk)
+    		break;
+	}
+	palloc_free_page(kbuf);
+	return copied;
+}
+
+static int
 syscall_write(int fd, const void *buffer, unsigned length) {
 	validate_user_buffer(buffer, length);
-
-	struct thread *curr = thread_current ();
-
 
 	if (fd == STDOUT_FILENO) {
 		putbuf(buffer, length);
@@ -303,7 +356,7 @@ syscall_handler (struct intr_frame *f) {
 			syscall_close(f->R.rdi);
 			break;
 		case SYS_READ:
-			//syscall_read(f->R.rdi, (void *)f->R.rsi, f->R.rdx);
+			f->R.rax = syscall_read(f->R.rdi, (void *)f->R.rsi, f->R.rdx);
 			break;
 		case SYS_WRITE:
 			f->R.rax = syscall_write(f->R.rdi, (void *)f->R.rsi, f->R.rdx);
