@@ -83,6 +83,19 @@ static tid_t allocate_tid (void);
 // 먼저 임시 gdt를 설정해야 합니다.
 static uint64_t gdt[3] = { 0, 0x00af9a000000ffff, 0x00cf92000000ffff };
 
+struct child_info *
+find_child_info(struct thread *parent, tid_t child_tid) {
+	for (struct list_elem *e = list_begin(&parent->child_list);
+         e != list_end(&parent->child_list);
+         e = list_next(e)) {
+
+        struct child_info *ci = list_entry(e, struct child_info, elem);
+        if (ci->tid == child_tid)
+            return ci;
+    }
+    return NULL;
+}
+
 bool
 thread_sleep_compare (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
 	const struct thread *ta = list_entry (a, struct thread, elem);

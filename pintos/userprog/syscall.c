@@ -375,7 +375,7 @@ syscall_handler (struct intr_frame *f) {
 			f->R.rax = syscall_create((const char *)f->R.rdi, (unsigned)f->R.rsi);
 			break;
 		case SYS_FORK:
-			f->R.rax = process_fork(f->R.rdi, f->R.rsi);
+			f->R.rax = process_fork((const char *)f->R.rdi, f);
 			break;
 		case SYS_EXEC:
 			f->R.rax = process_exec(f->R.rdi);
@@ -402,7 +402,7 @@ syscall_handler (struct intr_frame *f) {
 			f->R.rax = syscall_open(f->R.rdi); 
 			break;
 		case SYS_SEEK:
-			f->R.rax = syscall_seek((int)f->R.rdi, (unsigned)f->R.rsi);
+			syscall_seek((int)f->R.rdi, (unsigned)f->R.rsi);
 			break;
 		case SYS_TELL:
 			f->R.rax = syscall_tell((int)f->R.rdi);

@@ -31,6 +31,10 @@ static void __do_fork (void *);
 static void
 process_init (void) {
 	struct thread *current = thread_current ();
+
+	current->exit_status = 0;
+	list_init(&current->child_list);
+	sema_init(&current->wait_sema, 0);
 }
 
 /* FILE_NAME에서 로드된 "initd"라는 첫 번째 사용자 프로그램을 시작합니다.
@@ -74,10 +78,31 @@ initd (void *f_name) {
 /* 현재 프로세스를 `name`으로 복제합니다. 새 프로세스의 스레드 ID를 반환하거나,
  * 스레드를 생성할 수 없는 경우 TID_ERROR를 반환합니다. */
 tid_t
-process_fork (const char *name, struct intr_frame *if_ UNUSED) {
+process_fork (const char *name, struct intr_frame *if_) {
+	struct fork_args *args = palloc_get_page(PAL_ZERO);
+	if (args == NULL)
+		return TID_ERROR;
+
+	args->parent = thread_current();
+	args->parent_if = *if_;
+	sema_init(&args->fork_done, 0);
+	args->success = false;
 	/* 현재 스레드를 새 스레드로 복제합니다. */
-	return thread_create (name,
-			PRI_DEFAULT, __do_fork, thread_current ());
+	tid_t tid = thread_create (name, PRI_DEFAULT, __do_fork, (void *)args);
+	if (tid == TID_ERROR) {
+		palloc_free_page(args);
+		return TID_ERROR;
+	}
+
+	sema_down(&args->fork_done);
+
+	bool ok = args->success;
+	palloc_free_page(args);
+
+	if (!ok)
+		return TID_ERROR;
+
+	return tid;
 }
 
 #ifndef VM
@@ -88,24 +113,35 @@ duplicate_pte (uint64_t *pte, void *va, void *aux) {
 	struct thread *current = thread_current ();
 	struct thread *parent = (struct thread *) aux;
 	void *parent_page;
-	void *newpage;
+	void *new_page;
 	bool writable;
 
 	/* 1. TODO: parent_page가 커널 페이지인 경우 즉시 반환합니다. */
+	if (is_kernel_vaddr(va))
+		return true;
 
 	/* 2. 부모의 페이지 맵 레벨 4에서 VA를 해석합니다. */
 	parent_page = pml4_get_page (parent->pml4, va);
+	if (parent_page == NULL)
+		return true;
 
 	/* 3. TODO: 자식 프로세스를 위한 새로운 PAL_USER 페이지를 할당하고 결과를
 	 *    TODO: NEWPAGE에 설정합니다. */
+	new_page = palloc_get_page(PAL_USER);
+	if (new_page == NULL)
+		return false;
 
 	/* 4. TODO: 부모의 페이지를 새 페이지로 복제하고
 	 *    TODO: 부모의 페이지가 쓰기 가능한지 확인합니다 (결과에 따라 WRITABLE
 	 *    TODO: 설정). */
+	memcpy(new_page, parent_page, PGSIZE);
+
+	writable = (*pte & PTE_W) != 0;
 
 	/* 5. WRITABLE 권한으로 주소 VA에 자식의 페이지 테이블에 새 페이지를 추가합니다. */
-	if (!pml4_set_page (current->pml4, va, newpage, writable)) {
-		/* 6. TODO: 페이지 삽입에 실패하면 오류 처리를 수행합니다. */
+	if (!pml4_set_page (current->pml4, va, new_page, writable)) {
+		palloc_free_page(new_page);
+		return false;
 	}
 	return true;
 }
@@ -117,14 +153,15 @@ duplicate_pte (uint64_t *pte, void *va, void *aux) {
 static void
 __do_fork (void *aux) {
 	struct intr_frame if_;
-	struct thread *parent = (struct thread *) aux;
+	struct fork_args *args = aux;
+
+	struct thread *parent = args->parent;
 	struct thread *current = thread_current ();
-	/* TODO: 어떤 방식으로든 parent_if를 전달합니다. (즉, process_fork()의 if_) */
-	struct intr_frame *parent_if;
-	bool succ = true;
 
 	/* 1. CPU 컨텍스트를 로컬 스택으로 읽어옵니다. */
-	memcpy (&if_, parent_if, sizeof (struct intr_frame));
+	memcpy (&if_, &args->parent_if, sizeof if_);
+
+	args->success = false;
 
 	/* 2. 페이지 테이블 복제 */
 	current->pml4 = pml4_create();
@@ -146,12 +183,24 @@ __do_fork (void *aux) {
 	 * TODO:      사용하세요. 부모는 이 함수가 부모의 리소스를 성공적으로 복제할 때까지
 	 * TODO:      fork()에서 반환하지 않아야 합니다. */
 
+	 for (int fd = 2; fd < FD_MAX; fd++) {
+		if (parent->fd_table[fd] != NULL) {
+			current->fd_table[fd] = file_duplicate(parent->fd_table[fd]);
+			if (current->fd_table[fd] == NULL) goto error;
+		}
+	}
+
 	process_init ();
 
+	if_.R.rax = 0;
+
+	args->success = true;
+	sema_up(&args->fork_done);
+
 	/* 마지막으로, 새로 생성된 프로세스로 전환합니다. */
-	if (succ)
-		do_iret (&if_);
+	do_iret (&if_);
 error:
+	sema_up(&args->fork_done);
 	thread_exit ();
 }
 

@@ -5,6 +5,7 @@
 #include <list.h>
 #include <stdint.h>
 #include "threads/interrupt.h"
+#include "threads/synch.h"
 #ifdef VM
 #include "vm/vm.h"
 #endif
@@ -100,7 +101,8 @@ struct thread {
 	struct list_elem donation_elem; // 기부 목록 안의 요소
 
 	struct list child_list; // 자식 스레드 목록
-	struct list_elem child_elem; // 자식 스레드 목록 안의 요소
+
+	struct semaphore wait_sema;
 
 	/* thread.c와 synch.c 사이에서 공유. */
 	struct list_elem elem;              /* 리스트 요소. */
@@ -122,10 +124,21 @@ struct thread {
 	struct file *fd_table[FD_MAX];	   // 쓰레드가 보유한 fd테이블
 };
 
+struct child_info {
+    tid_t tid;
+    int exit_status;
+    bool waited;
+	bool exited;
+    struct semaphore wait_sema;
+    struct list_elem elem;
+};
+
 /* false(기본값)이면 라운드 로빈 스케줄러를 사용합니다.
    true이면 다단계 피드백 큐 스케줄러를 사용합니다.
    커널 명령줄 옵션 "-o mlfqs"로 제어됩니다. */
 extern bool thread_mlfqs;
+
+struct child_info * find_child_info(struct thread *parent, tid_t child_tid);
 
 void thread_init (void);
 void thread_start (void);
