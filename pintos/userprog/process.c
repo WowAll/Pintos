@@ -3,8 +3,9 @@
 #include <inttypes.h>
 #include <round.h>
 #include <stdio.h>
-#include <stdlib.h>
+//#include <stdlib.h>
 #include <string.h>
+#include "threads/malloc.h"
 #include "userprog/gdt.h"
 #include "userprog/tss.h"
 #include "filesys/directory.h"
@@ -83,24 +84,45 @@ process_fork (const char *name, struct intr_frame *if_) {
 	if (args == NULL)
 		return TID_ERROR;
 
-	args->parent = thread_current();
+	struct thread *parent = thread_current();
+	args->parent = parent;
 	args->parent_if = *if_;
 	sema_init(&args->fork_done, 0);
 	args->success = false;
-	/* 현재 스레드를 새 스레드로 복제합니다. */
-	tid_t tid = thread_create (name, PRI_DEFAULT, __do_fork, (void *)args);
-	if (tid == TID_ERROR) {
+
+	struct child_info *ci = malloc(sizeof *ci);
+	if (ci == NULL) {
 		palloc_free_page(args);
 		return TID_ERROR;
 	}
+	ci->tid = TID_ERROR;
+	ci->exit_status = 0;
+	ci->waited = false;
+	ci->exited = false;
+	sema_init(&ci->wait_sema, 0);
+	list_push_back(&parent->child_list, &ci->elem);
+	args->ci = ci;
+
+	/* 현재 스레드를 새 스레드로 복제합니다. */
+	tid_t tid = thread_create (name, PRI_DEFAULT, __do_fork, (void *)args);
+	if (tid == TID_ERROR) {
+		list_remove(&ci->elem);
+		free(ci);
+		palloc_free_page(args);
+		return TID_ERROR;
+	}
+	ci->tid = tid;
 
 	sema_down(&args->fork_done);
 
 	bool ok = args->success;
 	palloc_free_page(args);
 
-	if (!ok)
+	if (!ok) {
+		list_remove(&ci->elem);
+		free(ci);
 		return TID_ERROR;
+	}
 
 	return tid;
 }
@@ -154,7 +176,6 @@ static void
 __do_fork (void *aux) {
 	struct intr_frame if_;
 	struct fork_args *args = aux;
-
 	struct thread *parent = args->parent;
 	struct thread *current = thread_current ();
 
@@ -162,6 +183,9 @@ __do_fork (void *aux) {
 	memcpy (&if_, &args->parent_if, sizeof if_);
 
 	args->success = false;
+
+	current->parent = parent;
+	current->self_ci = NULL;
 
 	/* 2. 페이지 테이블 복제 */
 	current->pml4 = pml4_create();
@@ -190,6 +214,8 @@ __do_fork (void *aux) {
 		}
 	}
 
+	current->self_ci = args->ci;
+
 	process_init ();
 
 	if_.R.rax = 0;
@@ -199,6 +225,7 @@ __do_fork (void *aux) {
 
 	/* 마지막으로, 새로 생성된 프로세스로 전환합니다. */
 	do_iret (&if_);
+
 error:
 	sema_up(&args->fork_done);
 	thread_exit ();
@@ -258,7 +285,6 @@ process_wait (tid_t child_tid UNUSED) {
 void
 process_exit (void) {
 	struct thread *curr = thread_current ();
-	curr->exit_status = 0;
 	/* TODO: 여기에 코드를 작성하세요.
 	 * TODO: 프로세스 종료 메시지를 구현하세요 (참고:
 	 * TODO: project2/process_termination.html).
