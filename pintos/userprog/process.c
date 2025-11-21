@@ -8,6 +8,7 @@
 #include "threads/malloc.h"
 #include "userprog/gdt.h"
 #include "userprog/tss.h"
+#include "userprog/syscall.h"
 #include "filesys/directory.h"
 #include "filesys/file.h"
 #include "filesys/filesys.h"
@@ -28,6 +29,24 @@ static bool load (const char *file_name, struct intr_frame *if_);
 static void initd (void *f_name);
 static void __do_fork (void *);
 
+void
+do_close_fd(struct thread *t, int fd) {
+    struct file *f;
+
+    if (fd < 0 || fd >= FD_MAX)
+        return;
+
+    f = t->fd_table[fd];
+    if (f == NULL)
+        return;
+
+    lock_acquire(&filesys_lock);
+    file_close(f);
+    lock_release(&filesys_lock);
+
+    t->fd_table[fd] = NULL;
+}
+
 /* initd 및 기타 프로세스를 위한 일반 프로세스 초기화 함수. */
 static void
 process_init (void) {
@@ -35,7 +54,6 @@ process_init (void) {
 
 	current->exit_status = 0;
 	list_init(&current->child_list);
-	sema_init(&current->wait_sema, 0);
 }
 
 /* FILE_NAME에서 로드된 "initd"라는 첫 번째 사용자 프로그램을 시작합니다.
@@ -235,6 +253,9 @@ error:
  * 실패 시 -1을 반환합니다. */
 int
 process_exec (void *f_name) {
+	struct thread *t = thread_current();
+	struct file *old_exec = t->exec_file;
+	uint64_t *old_pml4 = t->pml4;
 	char *file_name = f_name;
 	bool success;
 	
@@ -246,18 +267,31 @@ process_exec (void *f_name) {
 	_if.cs = SEL_UCSEG;
 	_if.eflags = FLAG_IF | FLAG_MBS;
 
-	/* 먼저 현재 컨텍스트를 종료합니다 */
-	process_cleanup ();
-
-	/* 그런 다음 바이너리를 로드합니다 */
 	success = load (file_name, &_if);
-
-	/* 로드에 실패하면 종료합니다. */
 	palloc_free_page (file_name);
-	if (!success)
-		return -1;
 
-	/* 전환된 프로세스를 시작합니다. */
+	if (!success) {
+		uint64_t *new_pml4 = t->pml4;
+
+		t->pml4 = old_pml4;
+		process_activate(t);
+
+		if (new_pml4 != NULL && new_pml4 != old_pml4)
+			pml4_destroy(new_pml4);
+
+		return -1;
+	}
+
+	if (old_pml4 != NULL && old_pml4 != t->pml4)
+		pml4_destroy (old_pml4);
+
+	if (old_exec != NULL && old_exec != t->exec_file) {
+		lock_acquire(&filesys_lock);
+		file_allow_write(old_exec);
+        file_close(old_exec);
+        lock_release(&filesys_lock);
+	}
+
 	do_iret (&_if);
 	NOT_REACHED ();
 }
@@ -278,7 +312,7 @@ process_wait (tid_t child_tid UNUSED) {
 	 
 	timer_msleep(1000);
 	
-	return -1;
+	return 0;
 }
 
 /* 프로세스를 종료합니다. 이 함수는 thread_exit()에 의해 호출됩니다. */
@@ -289,6 +323,26 @@ process_exit (void) {
 	 * TODO: 프로세스 종료 메시지를 구현하세요 (참고:
 	 * TODO: project2/process_termination.html).
 	 * TODO: 여기에 프로세스 리소스 정리 기능을 구현하는 것을 권장합니다. */
+	if (curr->pml4 != NULL)
+		printf ("%s: exit(%d)\n", curr->name, curr->exit_status);
+
+	for(int fd = 2; fd < FD_MAX; fd++) {
+		struct file *f = curr->fd_table[fd];
+		if (f != NULL) {
+			lock_acquire(&filesys_lock);
+            file_close(f);
+            lock_release(&filesys_lock);
+            curr->fd_table[fd] = NULL;
+		}
+	}
+
+	if (curr->exec_file != NULL) {
+		lock_acquire(&filesys_lock);
+		file_allow_write(curr->exec_file);
+		file_close(curr->exec_file);
+		lock_release(&filesys_lock);
+		curr->exec_file = NULL;
+	}
 
 	process_cleanup ();
 }
@@ -417,11 +471,9 @@ load (const char *file_name, struct intr_frame *if_) {
 	/* 실행 파일을 엽니다. */
 	file = filesys_open (token);
 	if (file == NULL) {
-		printf ("load: %s: open failed\n", token);
+		printf("load: %s: open failed\n", token);
 		goto done;
 	}
-
-	palloc_free_page(token);
 
 	/* 실행 파일 헤더를 읽고 검증합니다. */
 	if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
@@ -500,12 +552,19 @@ load (const char *file_name, struct intr_frame *if_) {
 
 	if (!load_argument (file_name, if_))
 		goto done;
+
+	t->exec_file = file;
+	file_deny_write(file);
 	
 	success = true;
 
+	file = NULL;
+
 done:
 	/* 로드가 성공했든 실패했든 여기에 도달합니다. */
-	file_close (file);
+	if (!success && file != NULL)
+		file_close (file);
+	palloc_free_page(token);
 	return success;
 }
 

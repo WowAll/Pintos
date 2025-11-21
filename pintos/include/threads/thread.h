@@ -101,8 +101,12 @@ struct thread {
 	struct list_elem donation_elem; // 기부 목록 안의 요소
 
 	struct list child_list; // 자식 스레드 목록
+	struct child_info *self_ci;
 
-	struct semaphore wait_sema;
+	struct thread *parent;
+
+	struct file *exec_file;
+	struct file *fd_table[FD_MAX];	   // 쓰레드가 보유한 fd테이블
 
 	/* thread.c와 synch.c 사이에서 공유. */
 	struct list_elem elem;              /* 리스트 요소. */
@@ -120,8 +124,6 @@ struct thread {
 	/* thread.c에서 소유. */
 	struct intr_frame tf;               /* 전환을 위한 정보 */
 	unsigned magic;                     /* 스택 오버플로우를 감지합니다. */
-
-	struct file *fd_table[FD_MAX];	   // 쓰레드가 보유한 fd테이블
 };
 
 struct child_info {

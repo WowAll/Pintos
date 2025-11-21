@@ -6,13 +6,14 @@
 struct fork_args {
 	struct thread      *parent;    // 부모 쓰레드
 	struct intr_frame   parent_if; // 부모의 intr_frame "복사본" (by value)
-
+    struct child_info  *ci;
     struct semaphore    fork_done; // 자식 프로세스 생성이 완료됬는지 기다리기용 세마포어
-    bool                success;   // fork 성공여부    
+    bool                success;   // fork 성공여부
 };
 
 struct child_info * find_child_info(struct thread *parent, tid_t child_tid);
 
+void do_close_fd(struct thread *t, int fd);
 tid_t process_create_initd (const char *file_name);
 tid_t process_fork (const char *name, struct intr_frame *if_);
 int process_exec (void *f_name);

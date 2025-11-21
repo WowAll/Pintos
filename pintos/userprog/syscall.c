@@ -76,20 +76,28 @@ syscall_init (void) {
 	 return error_code != -1;
  }
 
-static void
-validate_user_buffer(const char *buffer, size_t length) {
-	const uint8_t *u = buffer;
-	if (u == NULL)
-		syscall_exit(-1);
-	if (length == 0)
-		return;
-	if (!is_user_vaddr(u) || !is_user_vaddr(u + length - 1))
-		syscall_exit(-1);
-	for (size_t i = 0; i < length; i++) {
-		if (get_user(u + i) == -1)
-			syscall_exit(-1);
-	}
-}
+ static void
+ validate_user_buffer(const void *buffer, size_t length) {
+	 const uint8_t *u = buffer;
+	 if (u == NULL)
+		 syscall_exit(-1);
+	 if (length == 0)
+		 return;
+ 
+	 const uint8_t *end = u + length - 1;
+	 for (const uint8_t *p = u; p <= end; ) {
+		 if (get_user(p) == -1)
+			 syscall_exit(-1);
+		 /* 다음 페이지의 첫 주소로 점프 */
+		 uintptr_t next = ( ((uintptr_t)p) & ~PGMASK ) + PGSIZE;
+		 if (next > (uintptr_t)end)
+			 break;
+		 p = (const uint8_t *)next;
+	 }
+	 /* 마지막 바이트도 한 번 명시적으로 확인 */
+	 if (get_user(end) == -1)
+		 syscall_exit(-1);
+ }
 
 static bool
 copy_user_string (char *kbuf, const char *ustr, size_t max_len)
@@ -150,7 +158,7 @@ syscall_read(int fd, void *buffer, unsigned size) {
 		return (int)size;
 	}
 
-	if (fd < 2 || fd >= 128)
+	if (fd < 2 || fd >= FD_MAX)
 		return -1;
 
 	struct file *f = find_file_by_fd(fd);
@@ -198,7 +206,7 @@ syscall_write(int fd, const void *buffer, unsigned length) {
 		return length;
 	}
 
-	if (fd < 2 || fd >= 128)
+	if (fd < 2 || fd >= FD_MAX)
 		return -1;
 
 	struct file *f = find_file_by_fd(fd);
@@ -224,7 +232,7 @@ syscall_remove(const char* filename) {
 
 	if (kname[0] == '\0') {
 		palloc_free_page(kname);
-		return -1;
+		return false;
 	}
 
 	lock_acquire(&filesys_lock);
@@ -275,25 +283,20 @@ syscall_open(const char* filename) {
 
 static void
 syscall_close (int fd) {
-	struct thread *curr = thread_current ();
-
-    struct file *f = find_file_by_fd(fd);
-    if (f == NULL)
-        return;
-
-    lock_acquire(&filesys_lock);
-    file_close(f);
-    lock_release(&filesys_lock);
-
-	curr->fd_table[fd] = NULL;
+	do_close_fd(thread_current(), fd);
 }
 
 static void
 syscall_exit (int status) {
-	struct thread *curr = thread_current();
-    curr->exit_status = status;
-	printf ("%s: exit(%d)\n", curr->name, status);
+	struct thread *cur = thread_current();
+    cur->exit_status = status;
 
+    struct child_info *ci = cur->self_ci;
+    if (ci != NULL) {
+        ci->exit_status = status;
+        ci->exited = true;
+        sema_up(&ci->wait_sema);
+    }
     thread_exit();
 }
 
@@ -360,6 +363,31 @@ syscall_tell (int fd) {
 	return position;
 }
 
+static int
+syscall_exec (const char *cmd_line) {
+	char *kname = palloc_get_page(0);
+
+	if (kname == NULL)
+		syscall_exit(-1);
+
+	if (!copy_user_string(kname, cmd_line, PGSIZE)) {
+		palloc_free_page(kname);
+		syscall_exit(-1);
+	}
+
+	if (kname[0] == '\0') {
+		palloc_free_page(kname);
+		syscall_exit(-1);
+	}
+
+	int ret = process_exec(kname);
+
+	if (ret == -1)
+		syscall_exit(-1);
+	
+	return ret;
+}
+
 /* 주요 시스템 호출 인터페이스 */
 void
 syscall_handler (struct intr_frame *f) {
@@ -378,7 +406,7 @@ syscall_handler (struct intr_frame *f) {
 			f->R.rax = process_fork((const char *)f->R.rdi, f);
 			break;
 		case SYS_EXEC:
-			f->R.rax = process_exec(f->R.rdi);
+			f->R.rax = syscall_exec((const char *)f->R.rdi);
 			break;
 		case SYS_WAIT:
 			f->R.rax = process_wait(f->R.rdi);

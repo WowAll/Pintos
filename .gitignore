@@ -30,4 +30,9 @@ core
 .DS_Store
 
 # 개인적인 테스트코드 실행용 쉘코드
-test.sh
+select_test.sh
+
+.test_config
+.test_status
+
+.vscode
