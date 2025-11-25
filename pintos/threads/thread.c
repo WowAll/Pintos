@@ -270,10 +270,6 @@ thread_create (const char *name, int priority,
 	struct thread *t;
 	tid_t tid;
 
-	char *save_ptr = NULL;
-
-	strtok_r(name, " ", &save_ptr);
-
 	ASSERT (function != NULL);
 
 	/* 스레드를 할당합니다. */
@@ -558,6 +554,7 @@ init_thread (struct thread *t, const char *name, int priority) {
 	t->default_priority = priority;
 	t->waiting_lock = NULL;
 	list_init(&t->donation_list);
+	list_init(&t->child_list);
 }
 
 /* 스케줄링할 다음 스레드를 선택하고 반환합니다.
