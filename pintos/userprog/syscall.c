@@ -286,7 +286,7 @@ syscall_close (int fd) {
 	do_close_fd(thread_current(), fd);
 }
 
-static void
+void
 syscall_exit (int status) {
 	struct thread *cur = thread_current();
     cur->exit_status = status;

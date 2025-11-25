@@ -2,6 +2,7 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include "userprog/gdt.h"
+#include "userprog/syscall.h"
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "intrinsic.h"
@@ -156,12 +157,17 @@ page_fault (struct intr_frame *f) {
 		return;
 	}
 
-	/* If the fault is true fault, show info and exit. */
-	printf ("Page fault at %p: %s error %s page in %s context.\n",
-			fault_addr,
-			not_present ? "not present" : "rights violation",
-			write ? "writing" : "reading",
-			user ? "user" : "kernel");
-	kill (f);
+	else
+		syscall_exit(-1);
+
+	NOT_REACHED();
+
+	// /* If the fault is true fault, show info and exit. */
+	// printf ("Page fault at %p: %s error %s page in %s context.\n",
+	// 		fault_addr,
+	// 		not_present ? "not present" : "rights violation",
+	// 		write ? "writing" : "reading",
+	// 		user ? "user" : "kernel");
+	// kill (f);
 }
 

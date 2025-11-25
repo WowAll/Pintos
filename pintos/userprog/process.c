@@ -24,27 +24,43 @@
 #include "vm/vm.h"
 #endif
 
+struct initd_args {
+	char               *fn_copy;
+	struct child_info  *ci;
+	struct thread 	   *parent;
+};
+
+struct fork_args {
+	struct thread      *parent;    // 부모 쓰레드
+	struct intr_frame   parent_if; // 부모의 intr_frame "복사본" (by value)
+    struct child_info  *ci;
+    struct semaphore    fork_done; // 자식 프로세스 생성이 완료됬는지 기다리기용 세마포어
+    bool                success;   // fork 성공여부
+};
+
 static void process_cleanup (void);
 static bool load (const char *file_name, struct intr_frame *if_);
 static void initd (void *f_name);
 static void __do_fork (void *);
 
-void
+bool
 do_close_fd(struct thread *t, int fd) {
     struct file *f;
 
     if (fd < 0 || fd >= FD_MAX)
-        return;
+        return false;
 
     f = t->fd_table[fd];
     if (f == NULL)
-        return;
+        return false;
 
     lock_acquire(&filesys_lock);
     file_close(f);
     lock_release(&filesys_lock);
 
     t->fd_table[fd] = NULL;
+	
+	return true;
 }
 
 /* initd 및 기타 프로세스를 위한 일반 프로세스 초기화 함수. */
@@ -53,7 +69,6 @@ process_init (void) {
 	struct thread *current = thread_current ();
 
 	current->exit_status = 0;
-	list_init(&current->child_list);
 }
 
 /* FILE_NAME에서 로드된 "initd"라는 첫 번째 사용자 프로그램을 시작합니다.
@@ -63,38 +78,87 @@ process_init (void) {
  * 이 함수는 한 번만 호출되어야 합니다. */
 tid_t
 process_create_initd (const char *file_name) {
+	struct initd_args *args = palloc_get_page(PAL_ZERO);
+	if (args == NULL)
+		return TID_ERROR;
+	struct thread *parent = thread_current();
+
+	struct child_info *ci = malloc(sizeof *ci);
+	if (ci == NULL) {
+		palloc_free_page(args);
+		return TID_ERROR;
+	}
+
+	ci->tid = TID_ERROR; 
+	ci->exit_status = 0;
+	ci->waited = false;
+	ci->exited = false;
+	sema_init(&ci->wait_sema, 0);
+
+	list_push_back(&parent->child_list, &ci->elem);
+
 	char *fn_copy;
 	tid_t tid;
 
 	/* FILE_NAME의 복사본을 만듭니다.
 	 * 그렇지 않으면 호출자와 load() 사이에 경쟁 조건이 발생합니다. */
 	fn_copy = palloc_get_page (0);
-	if (fn_copy == NULL)
+	if (fn_copy == NULL) {
+		list_remove(&ci->elem);
+        free(ci);
+        palloc_free_page(args);
 		return TID_ERROR;
+	}
+
 	strlcpy (fn_copy, file_name, PGSIZE);
 
+	char fname[16];
+
+	strlcpy(fname, file_name, sizeof fname);
+	char *save_ptr = NULL;
+
+	strtok_r(fname, " ", &save_ptr);
+
+	args->ci = ci;
+	args->parent = parent;
+	args->fn_copy = fn_copy;
+
 	/* FILE_NAME을 실행할 새 스레드를 생성합니다. */
-	tid = thread_create (file_name, PRI_DEFAULT, initd, fn_copy);
-	if (tid == TID_ERROR)
-		palloc_free_page (fn_copy);
+	tid = thread_create (fname, PRI_DEFAULT, initd, args);
+	if (tid == TID_ERROR) {
+		list_remove(&ci->elem);
+        free(ci);
+        palloc_free_page(fn_copy);
+		palloc_free_page(args);
+        return TID_ERROR;
+	}
+	ci->tid = tid;
+
 	return tid;
 }
 
 /* 첫 번째 사용자 프로세스를 시작하는 스레드 함수. */
 static void
-initd (void *f_name) {
+initd (void *aux) {
+	struct initd_args *args = aux;
+	struct thread *cur = thread_current();
 #ifdef VM
 	supplemental_page_table_init (&thread_current ()->spt);
 #endif
-
 	process_init ();
+	
+	cur->parent = args->parent;
+	cur->self_ci = args->ci;
+
+	char *f_name = args->fn_copy;
+    palloc_free_page(args);
 
 	if (process_exec (f_name) < 0)
 		PANIC("Fail to launch initd\n");
 	NOT_REACHED ();
 }
 
-/* 현재 프로세스를 `name`으로 복제합니다. 새 프로세스의 스레드 ID를 반환하거나,
+/* 현재 프로세스를 name으로 복제합니다. 새 프로세스의 스레드 ID를 반환하거나,
  * 스레드를 생성할 수 없는 경우 TID_ERROR를 반환합니다. */
 tid_t
 process_fork (const char *name, struct intr_frame *if_) {
@@ -221,7 +285,7 @@ __do_fork (void *aux) {
 #endif
 
 	/* TODO: 여기에 코드를 작성하세요.
-	 * TODO: 힌트) 파일 객체를 복제하려면 include/filesys/file.h의 `file_duplicate`를
+	 * TODO: 힌트) 파일 객체를 복제하려면 include/filesys/file.h의 file_duplicate를
 	 * TODO:      사용하세요. 부모는 이 함수가 부모의 리소스를 성공적으로 복제할 때까지
 	 * TODO:      fork()에서 반환하지 않아야 합니다. */
 
@@ -296,7 +360,6 @@ process_exec (void *f_name) {
 	NOT_REACHED ();
 }
 
-
 /* 스레드 TID가 종료될 때까지 대기하고 종료 상태를 반환합니다.
  * 커널에 의해 종료된 경우 (즉, 예외로 인해 종료된 경우) -1을 반환합니다.
  * TID가 유효하지 않거나 호출 프로세스의 자식이 아니거나,
@@ -305,14 +368,41 @@ process_exec (void *f_name) {
  *
  * 이 함수는 문제 2-2에서 구현됩니다. 현재는 아무 작업도 수행하지 않습니다. */
 int
-process_wait (tid_t child_tid UNUSED) {
+process_wait (tid_t child_tid) {
 	/* XXX: 힌트) process_wait (initd)가 호출되면 pintos가 종료되므로,
 	 * XXX:       process_wait를 구현하기 전에 여기에 무한 루프를 추가하는 것을
 	 * XXX:       권장합니다. */
-	 
-	timer_msleep(1000);
 	
-	return 0;
+	struct thread *t = thread_current ();
+	struct child_info *ci = NULL;
+	for (struct list_elem *e = list_begin(&t->child_list);
+         e != list_end(&t->child_list);
+         e = list_next(e)) {
+        struct child_info *tmp = list_entry(e, struct child_info, elem);
+        if (tmp->tid == child_tid) {
+            ci = tmp;
+            break;
+        }
+    }
+
+    if (ci == NULL)
+        return -1;      // 자식 아님
+
+    if (ci->waited)
+        return -1;      // 이미 wait함
+
+    ci->waited = true;
+
+    // 2) 자식이 아직 exit 안 했으면 기다리기
+    if (!ci->exited)
+        sema_down(&ci->wait_sema);
+
+    int status = ci->exit_status;
+    // 3) child_info 정리
+    list_remove(&ci->elem);
+    free(ci);
+
+    return status;
 }
 
 /* 프로세스를 종료합니다. 이 함수는 thread_exit()에 의해 호출됩니다. */
@@ -323,10 +413,20 @@ process_exit (void) {
 	 * TODO: 프로세스 종료 메시지를 구현하세요 (참고:
 	 * TODO: project2/process_termination.html).
 	 * TODO: 여기에 프로세스 리소스 정리 기능을 구현하는 것을 권장합니다. */
+
+	struct child_info *ci = curr->self_ci;
+
+	if (curr->self_ci != NULL) {
+        struct child_info *ci = curr->self_ci;
+        ci->exit_status = curr->exit_status;
+        ci->exited = true;
+        sema_up(&ci->wait_sema);
+    }
+
 	if (curr->pml4 != NULL)
 		printf ("%s: exit(%d)\n", curr->name, curr->exit_status);
 
-	for(int fd = 2; fd < FD_MAX; fd++) {
+	for (int fd = 2; fd < FD_MAX; fd++) {
 		struct file *f = curr->fd_table[fd];
 		if (f != NULL) {
 			lock_acquire(&filesys_lock);
@@ -469,7 +569,9 @@ load (const char *file_name, struct intr_frame *if_) {
 	process_activate (thread_current ());
 
 	/* 실행 파일을 엽니다. */
+	lock_acquire(&filesys_lock);
 	file = filesys_open (token);
+	lock_release(&filesys_lock);
 	if (file == NULL) {
 		printf("load: %s: open failed\n", token);
 		goto done;
@@ -553,8 +655,10 @@ load (const char *file_name, struct intr_frame *if_) {
 	if (!load_argument (file_name, if_))
 		goto done;
 
+	lock_acquire(&filesys_lock);
 	t->exec_file = file;
 	file_deny_write(file);
+	lock_release(&filesys_lock);
 	
 	success = true;
 
@@ -625,7 +729,6 @@ bool load_argument (const char *file_name, struct intr_frame *if_) {
 
 	return true;
 }
-
 
 /* PHDR가 FILE에서 유효하고 로드 가능한 세그먼트를 설명하는지 확인하고
  * 그렇다면 true를 반환하고, 그렇지 않으면 false를 반환합니다. */
