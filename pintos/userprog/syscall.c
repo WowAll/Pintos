@@ -291,12 +291,6 @@ syscall_exit (int status) {
 	struct thread *cur = thread_current();
     cur->exit_status = status;
 
-    struct child_info *ci = cur->self_ci;
-    if (ci != NULL) {
-        ci->exit_status = status;
-        ci->exited = true;
-        sema_up(&ci->wait_sema);
-    }
     thread_exit();
 }
 
